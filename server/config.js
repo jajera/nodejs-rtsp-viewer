@@ -88,9 +88,15 @@ module.exports = {
     // Video codec settings
     videoCodec: "libx264",
     videoBitrate: process.env.VIDEO_BITRATE || "2048k", // Match NVR default 2048 Kbps
-    videoPreset: "veryfast", // Balance between quality and CPU usage
+    videoPreset: process.env.VIDEO_PRESET || "veryfast", // ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow (ultrafast = lowest CPU)
     crf: 23, // Quality (lower = better quality, 18-28 is good range)
     g: 60, // GOP size (keyframe interval)
+    // CPU limiting options
+    maxThreads: process.env.MAX_THREADS
+      ? parseInt(process.env.MAX_THREADS, 10)
+      : null, // Limit CPU threads (null = auto-detect all cores)
+    maxFPS: process.env.MAX_FPS ? parseInt(process.env.MAX_FPS, 10) : null, // Limit frame rate (null = use source FPS)
+    scale: process.env.VIDEO_SCALE || null, // Scale down resolution (e.g., "1280:720", "1920:1080", null = no scaling)
 
     // Audio codec settings
     audioCodec: "aac",

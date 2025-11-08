@@ -240,6 +240,22 @@ class StreamManager {
         // Use 'cfr' for constant frame rate, or 'vfr' to preserve variable rate
         const vsyncMode = camera.vsyncMode || "cfr"; // Default to constant for HLS compatibility
 
+        // Determine thread count: per-camera override, global max, or auto-detect
+        const threadCount =
+          camera.maxThreads !== undefined
+            ? camera.maxThreads
+            : config.ffmpeg.maxThreads || 0; // 0 = auto-detect all cores
+
+        // Determine frame rate limit: per-camera override or global max
+        const maxFPS =
+          camera.maxFPS !== undefined ? camera.maxFPS : config.ffmpeg.maxFPS;
+
+        // Determine resolution scaling: per-camera override or global scale
+        const videoScale =
+          camera.videoScale !== undefined
+            ? camera.videoScale
+            : config.ffmpeg.scale;
+
         ffmpegCmd
           .addOption("-c:v", config.ffmpeg.videoCodec)
           .addOption("-b:v", config.ffmpeg.videoBitrate)
@@ -250,7 +266,21 @@ class StreamManager {
           .addOption("-pix_fmt", "yuv420p")
           .addOption("-profile:v", "baseline") // Use baseline profile for better browser compatibility
           .addOption("-level", "3.1") // H.264 level
-          .addOption("-threads", "0") // Auto-detect optimal thread count
+          .addOption("-threads", threadCount.toString()); // Limit CPU threads (0 = auto-detect all cores)
+
+        // Limit frame rate if specified (reduces CPU usage)
+        if (maxFPS) {
+          ffmpegCmd.addOption("-r", maxFPS.toString());
+          console.log(`[${camera.name}] Limiting frame rate to ${maxFPS} FPS`);
+        }
+
+        // Scale down resolution if specified (significantly reduces CPU usage)
+        if (videoScale) {
+          ffmpegCmd.addOption("-vf", `scale=${videoScale}`);
+          console.log(`[${camera.name}] Scaling video to ${videoScale}`);
+        }
+
+        ffmpegCmd
           // Force keyframes more frequently to help with corruption recovery
           .addOption("-force_key_frames", "expr:gte(n,n_forced*30)")
           .addOption("-vsync", vsyncMode)
@@ -331,8 +361,6 @@ class StreamManager {
       transport,
       "-rtsp_flags",
       "prefer_tcp",
-      "-stimeout",
-      "10000000",
       // Larger buffer for H.265 streams
       "-buffer_size",
       "4096000",
