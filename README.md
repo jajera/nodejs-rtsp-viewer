@@ -145,6 +145,9 @@ Each camera supports the following options:
 - `errorDetection` - "ignore_err", "aggressive", "careful", or "compliant" (default: "aggressive")
 - `hlsListSize` - Number of HLS segments to keep (default: 10)
 - `vsyncMode` - "cfr" (constant) or "vfr" (variable) frame rate (default: "cfr")
+- `maxThreads` - Limit CPU threads for encoding (default: auto-detect all cores, set to 2-4 for lower CPU usage)
+- `maxFPS` - Limit frame rate (e.g., 15, 20, 25, 30) - reduces CPU usage (default: use source FPS)
+- `videoScale` - Scale down resolution (e.g., "1280:720", "1920:1080") - significantly reduces CPU usage (default: no scaling)
 
 ### Global Defaults
 
@@ -157,7 +160,19 @@ DEFAULT_AUDIO_STREAM_INDEX=0
 DEFAULT_AUDIO_ENCODING_MODE=auto
 VIDEO_BITRATE=2048k
 DEFAULT_ERROR_DETECTION=aggressive
+VIDEO_PRESET=veryfast
+MAX_THREADS=4
+MAX_FPS=20
+VIDEO_SCALE=1280:720
 ```
+
+**CPU Limiting Options (to reduce CPU usage):**
+
+- `VIDEO_PRESET` - Encoding preset: `ultrafast` (lowest CPU, lower quality), `superfast`, `veryfast` (default), `faster`, `fast`, `medium`, `slow`, `slower`, `veryslow` (highest CPU, best quality)
+- `MAX_THREADS` - Limit CPU threads (e.g., `2`, `4`, `6`) - prevents using all CPU cores (default: auto-detect all cores)
+- `MAX_FPS` - Limit frame rate (e.g., `15`, `20`, `25`, `30`) - reduces CPU usage (default: use source FPS)
+- `VIDEO_SCALE` - Scale down resolution (e.g., `1280:720`, `1920:1080`) - significantly reduces CPU usage (default: no scaling)
+- `VIDEO_BITRATE` - Reduce bitrate (e.g., `1024k`, `1536k`) - lower values use less CPU (default: `2048k`)
 
 ## 📹 Getting Your Camera RTSP URL
 
@@ -298,8 +313,12 @@ Click the "ℹ️ Info" button on any camera to view:
 
 ### High CPU usage
 
-- Adjust FFmpeg preset in config (try `ultrafast` for lower CPU, `medium` for better quality)
-- Reduce video bitrate in config
+- **Set `VIDEO_PRESET=ultrafast`** in `.env` - fastest encoding (lowest CPU, acceptable quality)
+- **Set `MAX_THREADS=2` or `MAX_THREADS=4`** - limit CPU cores used (prevents maxing out all cores)
+- **Set `MAX_FPS=15` or `MAX_FPS=20`** - limit frame rate (reduces CPU significantly)
+- **Set `VIDEO_SCALE=1280:720`** - scale down resolution (major CPU reduction)
+- **Reduce `VIDEO_BITRATE=1024k`** - lower bitrate uses less CPU
+- **Use `videoMode: "passthrough"`** per camera - if camera outputs H.264, this avoids re-encoding (saves most CPU)
 - Use sub-stream instead of main stream for lower quality
 - Reduce number of simultaneous streams
 
