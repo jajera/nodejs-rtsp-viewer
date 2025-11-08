@@ -1,0 +1,51 @@
+{
+  "name": "Camera Web Viewer",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-20-bullseye",
+
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "installOhMyZsh": true,
+      "upgradePackages": true,
+      "username": "node",
+      "uid": "1000",
+      "gid": "1000"
+    }
+  },
+
+  "postCreateCommand": "bash -c 'sudo apt-get update && sudo apt-get install -y ffmpeg && ffmpeg -version && npm install'",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "ms-vscode.vscode-typescript-next",
+        "bradlc.vscode-tailwindcss"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit"
+        },
+        "files.eol": "\n",
+        "files.trimTrailingWhitespace": true,
+        "files.insertFinalNewline": true
+      }
+    }
+  },
+
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Web Server",
+      "onAutoForward": "notify"
+    }
+  },
+
+  "remoteUser": "node",
+  "remoteEnv": {
+    "NODE_ENV": "development"
+  }
+}

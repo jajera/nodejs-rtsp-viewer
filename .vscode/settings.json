@@ -1,0 +1,41 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "files.eol": "\n",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/hls": true,
+    "**/*.ts": true,
+    "**/*.m3u8": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/hls": true,
+    "**/*.ts": true,
+    "**/*.m3u8": true
+  },
+  "javascript.preferences.quoteStyle": "single",
+  "javascript.format.semicolons": "asNeeded",
+  "typescript.preferences.quoteStyle": "single",
+  "typescript.format.semicolons": "asNeeded",
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[html]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[css]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "files.associations": {
+    "*.env.example": "properties"
+  }
+}
