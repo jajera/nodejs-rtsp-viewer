@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# HLS segments and playlists
+hls/
+*.m3u8
+*.ts
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files (keep .vscode settings for team sharing)
+# User-specific VS Code settings can be added to .vscode/settings.json.local
+.idea/
+*.swp
+*.swo
+
