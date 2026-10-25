@@ -3,12 +3,17 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 
+/** HLS / stream id for a camera's optional substream (grid/wall). */
+function previewStreamId(cameraId) {
+  return `${cameraId}-preview`;
+}
+
 class StreamManager {
   constructor() {
-    this.streams = new Map(); // Map of cameraId -> stream info
+    this.streams = new Map(); // Map of streamId -> stream info
     this.onStatusChange = null;
 
-    // Initialize streams for all cameras
+    // Initialize main + optional preview streams for all cameras
     config.cameras.forEach((camera) => {
       this.streams.set(camera.id, {
         camera: camera,
@@ -16,37 +21,89 @@ class StreamManager {
         isStreaming: false,
         reconnectAttempts: 0,
         reconnectTimer: null,
+        stallTimer: null,
+        lastSegmentMtimeMs: 0,
+        isPreview: false,
       });
+
+      if (camera.previewRtspUrl) {
+        const previewId = previewStreamId(camera.id);
+        this.streams.set(previewId, {
+          camera: {
+            ...camera,
+            id: previewId,
+            name: `${camera.name} (preview)`,
+            rtspUrl: camera.previewRtspUrl,
+            // Tiles don't need audio; saves CPU on substream encodes
+            audioMode: "disabled",
+          },
+          ffmpegProcess: null,
+          isStreaming: false,
+          reconnectAttempts: 0,
+          reconnectTimer: null,
+          stallTimer: null,
+          lastSegmentMtimeMs: 0,
+          isPreview: true,
+          parentCameraId: camera.id,
+        });
+      }
     });
   }
 
   /**
-   * Start streaming from a specific camera
+   * Start streaming from a specific camera (also starts preview if configured)
    */
   startStream(cameraId = null) {
     const targetCameraId = cameraId || config.cameras[0]?.id;
-    const stream = this.streams.get(targetCameraId);
+    this._startOne(targetCameraId);
+
+    // Starting a main camera also starts its preview ingest
+    const previewId = previewStreamId(targetCameraId);
+    if (
+      this.streams.has(previewId) &&
+      !this.streams.get(targetCameraId)?.isPreview
+    ) {
+      this._startOne(previewId);
+    }
+  }
+
+  _startOne(streamId) {
+    const stream = this.streams.get(streamId);
 
     if (!stream) {
-      console.error(`Camera ${targetCameraId} not found`);
+      console.error(`Stream ${streamId} not found`);
       return;
     }
 
     if (stream.isStreaming) {
-      console.log(`Stream for ${targetCameraId} already running`);
+      console.log(`Stream for ${streamId} already running`);
       return;
     }
 
-    this._ensureHlsDirectory(targetCameraId);
-    this._startFFmpeg(targetCameraId);
+    // Only wipe HLS on cold start; reconnects keep recent segments for the player
+    this._ensureHlsDirectory(streamId, { clean: !stream._hasStartedOnce });
+    stream._hasStartedOnce = true;
+    this._startFFmpeg(streamId);
   }
 
   /**
-   * Stop streaming from a specific camera
+   * Stop streaming from a specific camera (also stops preview if configured)
    */
   stopStream(cameraId = null) {
     const targetCameraId = cameraId || config.cameras[0]?.id;
-    const stream = this.streams.get(targetCameraId);
+    this._stopOne(targetCameraId);
+
+    const previewId = previewStreamId(targetCameraId);
+    if (
+      this.streams.has(previewId) &&
+      !this.streams.get(targetCameraId)?.isPreview
+    ) {
+      this._stopOne(previewId);
+    }
+  }
+
+  _stopOne(streamId) {
+    const stream = this.streams.get(streamId);
 
     if (!stream) {
       return;
@@ -56,20 +113,21 @@ class StreamManager {
       clearTimeout(stream.reconnectTimer);
       stream.reconnectTimer = null;
     }
+    this._stopStallWatch(streamId);
 
     if (stream.ffmpegProcess) {
-      console.log(`Stopping FFmpeg process for ${targetCameraId}...`);
+      console.log(`Stopping FFmpeg process for ${streamId}...`);
       stream.ffmpegProcess.kill("SIGTERM");
       stream.ffmpegProcess = null;
     }
 
     stream.isStreaming = false;
     stream.reconnectAttempts = 0;
-    this._updateStatus(targetCameraId, "stopped");
+    this._updateStatus(streamId, "stopped");
   }
 
   /**
-   * Start all camera streams
+   * Start all camera streams (main + previews)
    */
   startAllStreams() {
     config.cameras.forEach((camera) => {
@@ -78,7 +136,7 @@ class StreamManager {
   }
 
   /**
-   * Stop all camera streams
+   * Stop all camera streams (main + previews)
    */
   stopAllStreams() {
     config.cameras.forEach((camera) => {
@@ -117,13 +175,21 @@ class StreamManager {
   }
 
   /**
-   * Get list of all cameras
+   * Get list of all cameras (includes live status for UI tiles)
    */
   getCameras() {
-    return config.cameras.map((camera) => ({
-      id: camera.id,
-      name: camera.name,
-    }));
+    return config.cameras.map((camera) => {
+      const stream = this.streams.get(camera.id);
+      const preview = this.streams.get(previewStreamId(camera.id));
+      return {
+        id: camera.id,
+        name: camera.name,
+        isStreaming: !!(stream && stream.isStreaming),
+        reconnectAttempts: stream ? stream.reconnectAttempts : 0,
+        hasPreview: !!camera.previewRtspUrl,
+        previewStreaming: !!(preview && preview.isStreaming),
+      };
+    });
   }
 
   /**
@@ -256,10 +322,16 @@ class StreamManager {
             ? camera.videoScale
             : config.ffmpeg.scale;
 
+        const bitrate = config.ffmpeg.videoBitrate;
+        const bufsize = config.ffmpeg.videoBufsize || "4M";
+
         ffmpegCmd
           .addOption("-c:v", config.ffmpeg.videoCodec)
-          .addOption("-b:v", config.ffmpeg.videoBitrate)
+          .addOption("-b:v", bitrate)
+          .addOption("-maxrate", bitrate)
+          .addOption("-bufsize", bufsize)
           .addOption("-preset", config.ffmpeg.videoPreset)
+          .addOption("-tune", "zerolatency")
           .addOption("-crf", config.ffmpeg.crf.toString())
           .addOption("-g", "30") // Keyframe every 1 second at 30fps (more frequent for corruption recovery)
           .addOption("-sc_threshold", "0") // Disable scene change detection
@@ -298,37 +370,41 @@ class StreamManager {
   }
 
   /**
-   * Ensure HLS output directory exists for a camera and clean old segments
+   * Ensure HLS output directory exists for a camera.
+   * @param {string} cameraId
+   * @param {{ clean?: boolean }} [opts] clean=true wipes old segments (cold start only)
    */
-  _ensureHlsDirectory(cameraId) {
+  _ensureHlsDirectory(cameraId, opts = {}) {
+    const { clean = false } = opts;
     const hlsDir = path.resolve(config.hlsOutputDir, cameraId);
     if (!fs.existsSync(hlsDir)) {
       fs.mkdirSync(hlsDir, { recursive: true });
       console.log(`Created HLS output directory: ${hlsDir}`);
-    } else {
-      // Clean up old segments and playlist on startup for fresh stream
-      try {
-        const files = fs.readdirSync(hlsDir);
-        let cleanedCount = 0;
-        files.forEach((file) => {
-          if (file.endsWith(".ts") || file.endsWith(".m3u8")) {
-            try {
-              fs.unlinkSync(path.join(hlsDir, file));
-              cleanedCount++;
-            } catch (err) {
-              // Ignore errors deleting individual files
-            }
+      return;
+    }
+    if (!clean) return;
+
+    try {
+      const files = fs.readdirSync(hlsDir);
+      let cleanedCount = 0;
+      files.forEach((file) => {
+        if (file.endsWith(".ts") || file.endsWith(".m3u8")) {
+          try {
+            fs.unlinkSync(path.join(hlsDir, file));
+            cleanedCount++;
+          } catch (err) {
+            // Ignore errors deleting individual files
           }
-        });
-        if (cleanedCount > 0) {
-          console.log(`Cleaned ${cleanedCount} old HLS files from ${cameraId}`);
         }
-      } catch (err) {
-        console.warn(
-          `Warning: Could not clean HLS directory for ${cameraId}:`,
-          err.message
-        );
+      });
+      if (cleanedCount > 0) {
+        console.log(`Cleaned ${cleanedCount} old HLS files from ${cameraId}`);
       }
+    } catch (err) {
+      console.warn(
+        `Warning: Could not clean HLS directory for ${cameraId}:`,
+        err.message
+      );
     }
   }
 
@@ -356,11 +432,18 @@ class StreamManager {
     // Hikvision NVRs work much better with TCP transport
     const transport =
       camera.rtspTransport || config.ffmpeg.rtspTransport || "tcp";
+    // RTSP socket timeout (microseconds). Dead sockets exit instead of hanging forever.
+    const rtspTimeoutUs =
+      camera.rtspTimeoutUs !== undefined
+        ? camera.rtspTimeoutUs
+        : config.ffmpeg.rtspTimeoutUs;
     const inputOptions = [
       "-rtsp_transport",
       transport,
       "-rtsp_flags",
       "prefer_tcp",
+      "-timeout",
+      String(rtspTimeoutUs),
       // Larger buffer for H.265 streams
       "-buffer_size",
       "4096000",
@@ -395,15 +478,17 @@ class StreamManager {
       console.log(`Using TCP transport for ${camera.name}`);
     }
 
-    // Use configured input video decoder if specified, otherwise let FFmpeg auto-detect
-    // This allows per-camera configuration via videoDecoder in .env
-    if (camera.videoDecoder) {
-      inputOptions.push("-c:v", camera.videoDecoder);
+    // Only force an input decoder for HEVC/H.265 (helps some NVRs).
+    // Forcing "-c:v h264" on Hikvision often makes corrupt-stream decode worse.
+    const decoder = (camera.videoDecoder || "").toLowerCase();
+    if (decoder === "hevc" || decoder === "h265") {
+      inputOptions.push("-c:v", "hevc");
+      console.log(`[${camera.name}] Using configured video decoder: hevc`);
+    } else if (decoder) {
       console.log(
-        `[${camera.name}] Using configured video decoder: ${camera.videoDecoder}`
+        `[${camera.name}] Ignoring videoDecoder=${camera.videoDecoder} on input (auto-detect); use "hevc" only when needed`
       );
     } else {
-      // Let FFmpeg auto-detect the codec - no assumptions
       console.log(`[${camera.name}] Auto-detecting video codec from stream`);
     }
 
@@ -423,8 +508,8 @@ class StreamManager {
     // Configure video based on explicit mode
     this._configureVideo(ffmpegCmd, camera);
 
-    // Ensure HLS directory exists before starting
-    this._ensureHlsDirectory(cameraId);
+    // Directory should already exist from _startOne / reconnect path
+    this._ensureHlsDirectory(cameraId, { clean: false });
 
     // Prepare HLS flags for continuous streaming
     // Add append_list to ensure continuous streaming
@@ -464,7 +549,9 @@ class StreamManager {
         // Initialize stream start time to suppress initial error noise
         stream._streamStartTime = Date.now();
         stream._h264ErrorLogged = false; // Reset error logging flag
+        stream.lastSegmentMtimeMs = Date.now();
         this._updateStatus(cameraId, "streaming");
+        this._startStallWatch(cameraId);
       })
       .on("stderr", (stderrLine) => {
         // Log detected video codec (critical for debugging)
@@ -499,6 +586,7 @@ class StreamManager {
         // Log HLS segment creation
         if (stderrLine.includes("Opening") && stderrLine.includes(".ts")) {
           console.log(`[${cameraId}] Creating segment: ${stderrLine.trim()}`);
+          stream.lastSegmentMtimeMs = Date.now();
         }
         // Log H.265 decoding issues
         if (
@@ -549,6 +637,7 @@ class StreamManager {
             );
           }
         }
+        this._stopStallWatch(cameraId);
         stream.isStreaming = false;
         stream.ffmpegProcess = null;
         this._updateStatus(cameraId, "error", err.message);
@@ -556,6 +645,7 @@ class StreamManager {
       })
       .on("end", () => {
         console.log(`FFmpeg process ended for ${cameraId}`);
+        this._stopStallWatch(cameraId);
         stream.isStreaming = false;
         stream.ffmpegProcess = null;
         this._updateStatus(cameraId, "ended");
@@ -563,6 +653,75 @@ class StreamManager {
       });
 
     stream.ffmpegProcess.run();
+  }
+
+  /**
+   * Watch HLS output; TERM hung encodes that stop writing segments.
+   */
+  _startStallWatch(cameraId) {
+    const stream = this.streams.get(cameraId);
+    if (!stream) return;
+    this._stopStallWatch(cameraId);
+
+    const stallSec = config.ffmpeg.stallTimeoutSec;
+    const intervalMs = Math.max(5000, Math.floor((stallSec * 1000) / 3));
+
+    stream.stallTimer = setInterval(() => {
+      this._checkStall(cameraId);
+    }, intervalMs);
+  }
+
+  _stopStallWatch(cameraId) {
+    const stream = this.streams.get(cameraId);
+    if (!stream || !stream.stallTimer) return;
+    clearInterval(stream.stallTimer);
+    stream.stallTimer = null;
+  }
+
+  _checkStall(cameraId) {
+    const stream = this.streams.get(cameraId);
+    if (!stream || !stream.isStreaming || !stream.ffmpegProcess) return;
+
+    const hlsDir = path.resolve(config.hlsOutputDir, cameraId);
+    let newestMs = stream.lastSegmentMtimeMs || stream._streamStartTime || 0;
+
+    try {
+      if (fs.existsSync(hlsDir)) {
+        const files = fs.readdirSync(hlsDir);
+        for (const file of files) {
+          if (!file.endsWith(".ts") && !file.endsWith(".m3u8")) continue;
+          const st = fs.statSync(path.join(hlsDir, file));
+          if (st.mtimeMs > newestMs) newestMs = st.mtimeMs;
+        }
+      }
+    } catch (err) {
+      console.warn(`[${cameraId}] Stall check failed:`, err.message);
+      return;
+    }
+
+    stream.lastSegmentMtimeMs = newestMs;
+    const ageSec = (Date.now() - newestMs) / 1000;
+    const stallSec = config.ffmpeg.stallTimeoutSec;
+
+    // Grace period after start before stall can fire
+    const startedAgo =
+      (Date.now() - (stream._streamStartTime || Date.now())) / 1000;
+    if (startedAgo < stallSec) return;
+
+    if (ageSec > stallSec) {
+      console.warn(
+        `[${cameraId}] Stall detected — last HLS update ${Math.floor(
+          ageSec
+        )}s ago (> ${stallSec}s); terminating ffmpeg`
+      );
+      this._stopStallWatch(cameraId);
+      try {
+        stream.ffmpegProcess.kill("SIGTERM");
+      } catch (err) {
+        console.warn(`[${cameraId}] Failed to TERM stalled ffmpeg:`, err.message);
+      }
+      // error/end handlers schedule reconnect
+    }
   }
 
   /**
@@ -589,6 +748,8 @@ class StreamManager {
         "reconnecting",
         `Attempt ${stream.reconnectAttempts}`
       );
+      // Do not wipe HLS on reconnect (keeps last segments available to the player)
+      this._ensureHlsDirectory(cameraId, { clean: false });
       this._startFFmpeg(cameraId);
     }, delay);
   }
@@ -624,3 +785,4 @@ class StreamManager {
 }
 
 module.exports = StreamManager;
+module.exports.previewStreamId = previewStreamId;

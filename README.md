@@ -12,14 +12,17 @@ This project was created for personal use, but is shared here in case it might b
 
 - **Real-time video and audio streaming** from multiple IP cameras
 - **Support for RTSP-compatible cameras** (Tapo, Amcrest, Hikvision, and others)
-- **Multi-camera view** - view all cameras simultaneously with auto-arranging grid
-- **Single camera view** - focus on one camera at a time
-- **Automatic reconnection** on disconnect with exponential backoff
+- **Home grid** - all cameras via **substream** (`previewRtspUrl`); click a tile to watch
+- **Watch view** - single camera **main stream**, full viewport
+- **Compare live** - select cameras (or all) and view them side by side (substreams)
+- **Fullscreen selected** - ephemeral fullscreen mosaic of selected (or all) cameras
+- **Live overlays** - Connecting / Reconnecting / No signal + LIVE badge
+- **Automatic reconnection** on disconnect with exponential backoff (UI + ffmpeg)
+- **RTSP timeout + stall watchdog** - hung streams exit and reconnect
 - **HLS streaming** for browser compatibility
-- **Dark theme UI** with responsive design
-- **Camera information modal** - view camera details, status, and settings
-- **Error handling and retry mechanisms** for robust streaming
-- **Configurable per-camera settings** - customize video/audio modes, decoders, and more
+- **Dark theme UI** with responsive mosaic layout
+- **Configurable per-camera settings** - video/audio modes, decoders, and more
+- **Docker Compose** packaging for always-on hosts
 - **Flexible configuration** via environment variables
 
 ## 🚀 Quick Start
@@ -86,7 +89,19 @@ brew install ffmpeg
 
 6. Open your browser to `http://localhost:3000`
 
-> **Note:** This project also includes a VS Code Dev Container configuration (`.devcontainer/devcontainer.json`) for development convenience, but it's **completely optional**. The project works perfectly fine with just Node.js and FFmpeg installed on your system.
+### Docker (always-on)
+
+Requires Docker and a configured `.env` (same as above). On Linux, Compose uses **host networking** so RTSP to LAN cameras works without extra routes.
+
+```bash
+cp .env.example .env
+# edit .env with real camera URLs
+docker compose up -d --build
+```
+
+Open `http://localhost:3000`. HLS segments persist in `./hls`. Logs: `docker compose logs -f`.
+
+> **Note:** A VS Code Dev Container (`.devcontainer/devcontainer.json`) is optional for development. Runtime packaging is the root `Dockerfile` / `docker-compose.yml`.
 
 ## ⚙️ Configuration
 
@@ -109,20 +124,24 @@ CAMERAS=[
 ]
 ```
 
-**Hikvision NVR Channel:**
+**Hikvision NVR Channel (main + sub):**
 
 ```json
 CAMERAS=[
   {
     "id": "nvr_ch1",
     "name": "NVR Channel 1",
-    "rtspUrl": "rtsp://admin:password@192.168.1.100:554/Streaming/Channels/102",
+    "rtspUrl": "rtsp://admin:password@192.168.1.100:554/Streaming/Channels/101",
+    "previewRtspUrl": "rtsp://admin:password@192.168.1.100:554/Streaming/Channels/102",
     "rtspTransport": "tcp",
     "videoMode": "reencode",
-    "audioMode": "disabled"
+    "audioMode": "disabled",
+    "errorDetection": "ignore_err"
   }
 ]
 ```
+
+> **Required:** Disable Hikvision **stream encryption** on the NVR/camera first, or FFmpeg will show gray/green garbage. See [Hikvision: disable stream encryption](#hikvision-disable-stream-encryption).
 
 ### Configuration Options
 
@@ -132,10 +151,11 @@ Each camera supports the following options:
 
 - `id` - Unique identifier (e.g., "camera1", "nvr_ch1")
 - `name` - Display name (e.g., "Front Door", "NVR Channel 1")
-- `rtspUrl` - RTSP stream URL
+- `rtspUrl` - RTSP stream URL used for **watch** (main / high quality)
 
 **Optional (overrides global defaults):**
 
+- `previewRtspUrl` - Substream for **home**, **compare**, and **fullscreen selected** (e.g. Tapo `/stream2`, Hikvision `…/x02`). If omitted, those views use `rtspUrl`.
 - `rtspTransport` - "tcp" or "udp" (default: "tcp")
 - `videoMode` - "reencode" or "passthrough" (default: "reencode")
 - `audioMode` - "disabled", "auto", or "manual" (default: "auto")
@@ -159,12 +179,17 @@ DEFAULT_AUDIO_MODE=auto
 DEFAULT_AUDIO_STREAM_INDEX=0
 DEFAULT_AUDIO_ENCODING_MODE=auto
 VIDEO_BITRATE=2048k
+VIDEO_BUFSIZE=4M
 DEFAULT_ERROR_DETECTION=aggressive
 VIDEO_PRESET=veryfast
 MAX_THREADS=4
 MAX_FPS=20
 VIDEO_SCALE=1280:720
+RTSP_TIMEOUT_US=15000000
+STALL_TIMEOUT_SEC=30
 ```
+
+**~10 cameras:** Prefer `videoMode: "passthrough"` when cameras already output H.264. Otherwise reencode with per-camera `maxFPS` / `videoScale` / `maxThreads`. Use `VIDEO_PRESET=ultrafast` if the host is CPU-bound.
 
 **CPU Limiting Options (to reduce CPU usage):**
 
@@ -173,6 +198,8 @@ VIDEO_SCALE=1280:720
 - `MAX_FPS` - Limit frame rate (e.g., `15`, `20`, `25`, `30`) - reduces CPU usage (default: use source FPS)
 - `VIDEO_SCALE` - Scale down resolution (e.g., `1280:720`, `1920:1080`) - significantly reduces CPU usage (default: no scaling)
 - `VIDEO_BITRATE` - Reduce bitrate (e.g., `1024k`, `1536k`) - lower values use less CPU (default: `2048k`)
+- `RTSP_TIMEOUT_US` - RTSP socket timeout in microseconds (default: `15000000` = 15s)
+- `STALL_TIMEOUT_SEC` - Restart ffmpeg if HLS output stalls (default: `30`)
 
 ## 📹 Getting Your Camera RTSP URL
 
@@ -184,8 +211,8 @@ VIDEO_SCALE=1280:720
 4. Create a username and password for RTSP access
 5. Find your camera's local IP address (usually in network settings)
 6. Use the format: `rtsp://username:password@camera_ip:554/stream1`
-   - Use `/stream1` for high quality
-   - Use `/stream2` for lower quality (better for slower networks)
+   - Use `/stream1` for high quality (`rtspUrl` / watch)
+   - Use `/stream2` for lower quality (`previewRtspUrl` / home, compare, fullscreen selected)
    - Port is typically `554` (standard RTSP) or `2020` (ONVIF management port)
 
 **Note:** This application supports many RTSP-compatible cameras, not just Tapo.
@@ -202,26 +229,38 @@ VIDEO_SCALE=1280:720
 
 ### Hikvision NVR
 
-1. Log into your NVR's web interface (usually `http://nvr_ip`)
-2. Note your username and password (default is often `admin`/`admin` or `admin`/`12345`)
-3. Find the channel numbers for your cameras (usually displayed in the NVR interface)
-4. Use the format: `rtsp://username:password@nvr_ip:554/Streaming/Channels/[channel]01`
-   - Replace `[channel]` with the channel number:
-     - Channel 1: `101` (main stream) or `102` (sub stream)
-     - Channel 2: `201` (main stream) or `202` (sub stream)
-     - Channel 3: `301` (main stream) or `302` (sub stream)
-     - And so on...
-   - The last digit: `01` = main stream (high quality), `02` = sub stream (lower quality)
-5. **Alternative RTSP format** (some Hikvision models):
-   - `rtsp://username:password@nvr_ip:554/h264/ch[channel]/main/av_stream`
-   - `rtsp://username:password@nvr_ip:554/h264/ch[channel]/sub/av_stream`
+1. Log into your NVR's web interface (usually `http://nvr_ip:8081` or similar)
+2. **Disable stream encryption** (required — see below)
+3. Note username/password (prefer a dedicated RTSP user with live-view rights)
+4. Channel URLs: `rtsp://user:pass@nvr_ip:554/Streaming/Channels/[channel]0[stream]`
+   - Channel 1: `101` main / `102` sub  
+   - Channel 2: `201` main / `202` sub  
+   - … (`x01` = main for watch, `x02` = sub for home/compare/fullscreen)
+5. **Alternative paths** (some models):
+   - `rtsp://…/h264/ch[channel]/main/av_stream`
+   - `rtsp://…/h264/ch[channel]/sub/av_stream`
 
 **Configuration options:**
 
-- `rtspTransport: "tcp"` - Use TCP transport (recommended for H.265 streams and Hikvision NVRs)
-- `videoDecoder: "hevc"` - Explicitly set decoder for H.265 streams
-- `errorDetection: "aggressive"` - Recommended for corrupted streams
-- `audioMode: "disabled"` - Disable audio if camera has no audio or produces noise
+- `rtspTransport: "tcp"` - Recommended for Hikvision NVRs
+- `videoMode: "reencode"` - Required for reliable browser HLS
+- `videoDecoder: "hevc"` - Only if that channel’s **main** stream is H.265 (omit for H.264)
+- `errorDetection: "ignore_err"` - Often better for analog/hybrid NVR noise than `aggressive`
+- `audioMode: "disabled"` - Common for NVR channels without usable audio
+
+#### Hikvision: disable stream encryption
+
+Many Hikvision NVRs/cameras enable **stream encryption** (verification code / “encrypt video”). Encrypted RTSP **cannot** be decoded by FFmpeg or this viewer: you get a gray/green picture or constant decode errors even when the URL and password are correct. iVMS / Hik-Connect can still play the stream because they know the verification code — this app cannot use that PIN.
+
+**Turn encryption off** before using this viewer:
+
+1. Prefer the **NVR local monitor** (HDMI + mouse): **Menu → Configuration → Network → Platform Access** (or Hik-Connect) → untick **Enable Stream Encryption** → Apply.
+2. Or web UI / Hik-Connect app (firmware-dependent): Platform Access / site settings → disable **Image and Video encryption** / stream encryption.
+3. Retest:  
+   `ffmpeg -rtsp_transport tcp -i "rtsp://USER:PASS@NVR:554/Streaming/Channels/101" -frames:v 1 -f null -`  
+   You should get a real frame, not gray noise.
+
+Encryption is a **device setting**. This project cannot unlock encrypted streams. If encryption must stay on, use Hikvision’s own clients.
 
 ## 🎯 Usage
 
@@ -234,34 +273,29 @@ npm start
 The server will:
 
 - Start on `http://localhost:3000` (or the port specified in `.env`)
-- Automatically begin streaming from all configured cameras
-- Display cameras in multi-view or single-view mode
-- Automatically reconnect if a stream disconnects
+- Automatically begin streaming from all configured cameras (main + preview when set)
+- Serve the home grid (substreams) at `/`
 
 ### View Modes
 
-- **Single View**: Focus on one camera at a time with full-screen playback
-- **Multi View**: View all cameras simultaneously in an auto-arranging grid
+| View | How | Stream |
+|------|-----|--------|
+| **Home** | Default landing | Substream (`previewRtspUrl`) |
+| **Watch** | Click a home tile | Main (`rtspUrl`) |
+| **Compare live** | Tick ≥2 cameras (or none = all) → **Compare live** | Substreams |
+| **Fullscreen selected** | Tick cameras (or none = all) → **Fullscreen selected** | Substreams |
 
-### Camera Information
-
-Click the "ℹ️ Info" button on any camera to view:
-
-- Camera name and ID
-- Connection status
-- RTSP URL (password masked)
-- Transport protocol
-- Video/Audio modes
-- Decoder settings
-- HLS configuration
+Selection rules: **0 ticked** = treat as all cameras; **Compare** needs at least 2; **Fullscreen selected** needs at least 1.
 
 ## 🔧 API Endpoints
 
-- `GET /api/cameras` - Get list of configured cameras
-- `GET /api/stream/:cameraId/status` - Get current stream status
-- `GET /api/stream/:cameraId/playlist.m3u8` - Get HLS playlist for a camera
-- `POST /api/stream/:cameraId/start` - Manually start the stream
-- `POST /api/stream/:cameraId/stop` - Stop the stream
+- `GET /api/cameras` - Camera list with `isStreaming` / `previewStreaming` / `hasPreview`
+- `GET /api/health` - Basic health (legacy single-stream summary)
+- `GET /api/stream/status?cameraId=` - Stream status (omit `cameraId` for all)
+- `GET /api/stream/:cameraId/playlist.m3u8` - Main HLS playlist (watch)
+- `GET /api/stream/:cameraId/preview.m3u8` - Substream HLS (home/compare/FS); falls back to main
+- `POST /api/stream/start` - Body `{ "cameraId": "…" }` (optional; omit for first camera)
+- `POST /api/stream/stop` - Body `{ "cameraId": "…" }`
 
 ## 📷 Camera Model Compatibility
 
@@ -324,24 +358,26 @@ Click the "ℹ️ Info" button on any camera to view:
 
 ### Gray or green video
 
-- Remove `videoCodec: "copy"` if using passthrough mode - enable re-encoding instead
-- Check if stream requires a stream key (try alternative RTSP paths)
-- Verify camera stream is not encrypted
-- Try different video decoder settings
+- **Hikvision:** disable **stream encryption** on the NVR ([section above](#hikvision-disable-stream-encryption)) — the most common cause of gray RTSP with a working iVMS/Hik-Connect PIN
+- Prefer `videoMode: "reencode"` over passthrough for NVR channels
+- Do **not** force `videoDecoder: "hevc"` on H.264 streams (and vice versa)
+- Confirm main vs sub URLs (`…101` vs `…102`)
 
 ### Corrupted video or decoding errors
 
-- Set `errorDetection: "aggressive"` for the camera
-- Set explicit `videoDecoder` (e.g., "h264" or "hevc")
-- Try different RTSP transport (TCP vs UDP)
+- For hybrid NVRs try `errorDetection: "ignore_err"`
+- Only set `videoDecoder` when you know the codec (H.264 vs H.265)
+- Prefer `rtspTransport: "tcp"`
 - Check network stability and packet loss
 
 ## 🏗️ Architecture
 
-- **Backend**: Node.js + Express + FFmpeg (RTSP → HLS conversion)
-- **Frontend**: HTML5 + Video.js (HLS playback)
-- **Streaming**: HLS (HTTP Live Streaming) for browser compatibility
+- **Backend**: Node.js + Express + FFmpeg (RTSP → HLS; main + optional preview ingest)
+- **Frontend**: Vanilla HTML/CSS/JS + Video.js (home, watch, compare live, fullscreen selected)
+- **Streaming**: HLS for browser compatibility
+- **Resilience**: Per-camera ffmpeg reconnect, RTSP timeout, HLS stall watchdog; UI exponential retry
 - **Configuration**: Environment variables via `.env` file
+- **Deploy**: Optional Docker Compose (`network_mode: host` on Linux)
 
 ## 📝 License
 

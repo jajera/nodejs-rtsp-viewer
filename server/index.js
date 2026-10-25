@@ -1,8 +1,10 @@
 const express = require("express");
 const cors = require("cors");
+const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 const StreamManager = require("./streamManager");
+const { previewStreamId } = StreamManager;
 
 const app = express();
 const streamManager = new StreamManager();
@@ -54,97 +56,70 @@ app.post("/api/stream/stop", (req, res) => {
   res.json({ message: `Stream stopped for camera ${cameraId || "default"}` });
 });
 
-// HLS playlist endpoint for specific camera
-app.get("/api/stream/:cameraId/playlist.m3u8", (req, res) => {
-  const cameraId = req.params.cameraId;
+function sendHlsPlaylist(res, streamDirId, label) {
   const playlistPath = path.resolve(
     config.hlsOutputDir,
-    cameraId,
+    streamDirId,
     "playlist.m3u8"
   );
 
-  // Read and modify playlist to fix segment paths
-  const fs = require("fs");
-  try {
-    if (fs.existsSync(playlistPath)) {
-      let playlistContent = fs.readFileSync(playlistPath, "utf8");
-      // Remove #EXT-X-ENDLIST to allow continuous streaming
-      // FFmpeg may add this when it encounters errors, but we want continuous streaming
-      playlistContent = playlistContent.replace(/#EXT-X-ENDLIST\s*\n?/g, "");
-      // Replace relative segment paths with absolute paths
-      // Matches lines that are just segment filenames (not starting with # or /)
-      playlistContent = playlistContent.replace(
-        /^([^#\/\s][^\s]*\.ts)$/gm,
-        `/hls/${cameraId}/$1`
-      );
-
-      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.send(playlistContent);
-    } else {
-      // Return a valid empty HLS playlist instead of 404
-      // This allows the player to wait and retry instead of showing an error
-      const emptyPlaylist = `#EXTM3U
+  const emptyPlaylist = `#EXTM3U
 #EXT-X-VERSION:6
 #EXT-X-TARGETDURATION:2
 #EXT-X-MEDIA-SEQUENCE:0
 #EXT-X-INDEPENDENT-SEGMENTS
 # Stream is starting, please wait...
 `;
-      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-      res.send(emptyPlaylist);
-    }
-  } catch (err) {
-    console.error(`Error serving playlist for ${cameraId}:`, err);
-    // Return empty playlist on error too, so player can retry
-    const emptyPlaylist = `#EXTM3U
-#EXT-X-VERSION:6
-#EXT-X-TARGETDURATION:2
-#EXT-X-MEDIA-SEQUENCE:0
-#EXT-X-INDEPENDENT-SEGMENTS
-# Error reading playlist, retrying...
-`;
-    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    res.status(200).send(emptyPlaylist);
-  }
-});
 
-// Legacy playlist endpoint (uses first camera)
-app.get("/api/stream/playlist.m3u8", (req, res) => {
-  const firstCameraId = config.cameras[0]?.id || "camera1";
-  const playlistPath = path.resolve(
-    config.hlsOutputDir,
-    firstCameraId,
-    "playlist.m3u8"
-  );
-
-  // Read and modify playlist to fix segment paths
-  const fs = require("fs");
   try {
     if (fs.existsSync(playlistPath)) {
       let playlistContent = fs.readFileSync(playlistPath, "utf8");
-      // Replace relative segment paths with absolute paths
+      playlistContent = playlistContent.replace(/#EXT-X-ENDLIST\s*\n?/g, "");
       playlistContent = playlistContent.replace(
-        /^(segment_\d+\.ts)$/gm,
-        `/hls/${firstCameraId}/$1`
+        /^([^#\/\s][^\s]*\.ts)$/gm,
+        `/hls/${streamDirId}/$1`
       );
 
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.send(playlistContent);
     } else {
-      res
-        .status(404)
-        .json({ error: "Playlist not found. Stream may not be started." });
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.send(emptyPlaylist);
     }
   } catch (err) {
-    console.error("Error serving playlist:", err);
-    res.status(500).json({ error: "Error reading playlist" });
+    console.error(`Error serving ${label} playlist for ${streamDirId}:`, err);
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.status(200).send(emptyPlaylist);
   }
+}
+
+// Main (watch) HLS playlist
+app.get("/api/stream/:cameraId/playlist.m3u8", (req, res) => {
+  sendHlsPlaylist(res, req.params.cameraId, "main");
+});
+
+// Preview (home/compare/FS) HLS playlist — <id>-preview when segments exist, else main
+app.get("/api/stream/:cameraId/preview.m3u8", (req, res) => {
+  const cameraId = req.params.cameraId;
+  const previewId = previewStreamId(cameraId);
+  const previewPlaylist = path.resolve(
+    config.hlsOutputDir,
+    previewId,
+    "playlist.m3u8"
+  );
+  const usePreview = fs.existsSync(previewPlaylist);
+  sendHlsPlaylist(res, usePreview ? previewId : cameraId, "preview");
+});
+
+// Legacy playlist endpoint (uses first camera)
+app.get("/api/stream/playlist.m3u8", (req, res) => {
+  const firstCameraId = config.cameras[0]?.id || "camera1";
+  sendHlsPlaylist(res, firstCameraId, "legacy");
 });
 
 // Start the server
@@ -180,7 +155,7 @@ process.on("SIGINT", () => {
 // Log stream status changes
 streamManager.setStatusCallback((status) => {
   console.log(
-    `Stream status: ${status.status}${
+    `Stream status [${status.cameraId || "?"}]: ${status.status}${
       status.message ? " - " + status.message : ""
     }`
   );
