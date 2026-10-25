@@ -1,0 +1,10 @@
+node_modules
+hls
+.git
+.github
+.devcontainer
+.vscode
+.env
+*.md
+hls/**
+**/.DS_Store

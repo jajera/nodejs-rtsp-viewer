@@ -88,6 +88,7 @@ module.exports = {
     // Video codec settings
     videoCodec: "libx264",
     videoBitrate: process.env.VIDEO_BITRATE || "2048k", // Match NVR default 2048 Kbps
+    videoBufsize: process.env.VIDEO_BUFSIZE || "4M", // VBV buffer for maxrate (live)
     videoPreset: process.env.VIDEO_PRESET || "veryfast", // ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow (ultrafast = lowest CPU)
     crf: 23, // Quality (lower = better quality, 18-28 is good range)
     g: 60, // GOP size (keyframe interval)
@@ -113,6 +114,14 @@ module.exports = {
     // RTSP input settings - default to TCP for better reliability (especially Hikvision NVRs)
     rtspTransport: "tcp", // TCP is more reliable for NVRs, can be overridden per camera
     rtspFlags: null, // No flags needed
+    // RTSP demuxer socket timeout in microseconds (15s). Hung sockets exit instead of wedging.
+    rtspTimeoutUs: process.env.RTSP_TIMEOUT_US
+      ? parseInt(process.env.RTSP_TIMEOUT_US, 10)
+      : 15000000,
+    // Kill ffmpeg if no new HLS segment/playlist mtime for this many seconds
+    stallTimeoutSec: process.env.STALL_TIMEOUT_SEC
+      ? parseInt(process.env.STALL_TIMEOUT_SEC, 10)
+      : 30,
 
     // Default video and audio modes (can be overridden per camera)
     // Video modes: 'reencode' or 'passthrough'

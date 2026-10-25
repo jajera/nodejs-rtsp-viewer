@@ -2,94 +2,160 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0d10" />
+    <meta name="color-scheme" content="dark" />
     <title>Camera Viewer</title>
     <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <div class="container">
-      <header>
-        <h1>🎥 Camera Viewer</h1>
-        <div class="header-controls">
-          <div class="camera-selector">
-            <label for="camera-select">Camera:</label>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <button
+            type="button"
+            id="back-home-btn"
+            class="btn btn-ghost hidden"
+            aria-label="Back to grid"
+            title="Back to grid (Esc)"
+          >
+            ← Grid
+          </button>
+          <h1>Camera Viewer</h1>
+        </div>
+        <div class="topbar-actions">
+          <div id="watch-camera-selector" class="camera-selector hidden">
+            <label for="camera-select">Camera</label>
             <select id="camera-select" class="camera-select">
-              <option value="">Loading cameras...</option>
+              <option value="">Loading…</option>
             </select>
           </div>
-          <div class="status-container">
-            <div id="status-indicator" class="status-indicator">
-              <span class="status-dot"></span>
-              <span id="status-text">Initializing...</span>
-            </div>
+          <div
+            id="status-indicator"
+            class="status-indicator"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="status-text">Loading…</span>
           </div>
         </div>
       </header>
 
       <main>
-        <div class="view-mode-toggle">
-          <button id="single-view-btn" class="btn btn-secondary active">
-            Single View
-          </button>
-          <button id="multi-view-btn" class="btn btn-secondary">
-            Multi View
-          </button>
-        </div>
+        <div id="a11y-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
-        <!-- Single camera view -->
-        <div id="single-view" class="view-container">
-          <div class="player-container">
-            <video
-              id="video-player"
-              class="video-js vjs-default-skin"
-              controls
-              preload="auto"
-              data-setup="{}"
-            >
-              <p class="vjs-no-js">
-                To view this video please enable JavaScript, and consider
-                upgrading to a web browser that
-                <a
-                  href="https://videojs.com/html5-video-support/"
-                  target="_blank"
-                  >supports HTML5 video</a
-                >.
-              </p>
-            </video>
-          </div>
-
-          <div class="controls">
+        <!-- Home: all cameras (substream) -->
+        <section id="home-view" class="view is-active" aria-label="Camera grid">
+          <div class="compare-home-bar">
+            <button type="button" id="select-all-btn" class="btn btn-ghost">
+              Select all
+            </button>
+            <button type="button" id="select-clear-btn" class="btn btn-ghost">
+              Clear
+            </button>
             <button
-              id="retry-btn"
-              class="btn btn-primary"
-              style="display: none"
+              type="button"
+              id="compare-live-btn"
+              class="btn btn-secondary"
+              disabled
+              title="Select at least 2 cameras (or none to use all)"
             >
-              Retry Connection
+              Compare live
             </button>
-            <button id="refresh-btn" class="btn btn-secondary">
-              Refresh Stream
+            <button
+              type="button"
+              id="fs-selected-btn"
+              class="btn btn-secondary"
+              disabled
+              title="Select cameras, or none to use all"
+            >
+              Fullscreen selected
+            </button>
+            <span id="home-select-meta" class="meta" aria-live="polite"
+              >Tick cameras, or use all</span
+            >
+          </div>
+          <div id="home-grid" class="cam-grid"></div>
+          <p id="home-empty" class="empty-msg hidden">No cameras configured.</p>
+        </section>
+
+        <!-- Watch: single camera (main stream) -->
+        <section id="watch-view" class="view" aria-label="Single camera">
+          <div class="stage" id="watch-stage">
+            <div class="frame" id="watch-frame">
+              <video
+                id="video-player"
+                class="video-js vjs-default-skin"
+                controls
+                playsinline
+                preload="auto"
+              ></video>
+              <div class="wm" id="watch-wm" aria-hidden="true">
+                <span class="wm-site" id="watch-wm-name"></span>
+              </div>
+              <div class="live-badge hidden" id="watch-live-badge">LIVE</div>
+              <div class="live-overlay" id="watch-overlay" role="status">
+                <span class="live-overlay-msg" id="watch-overlay-msg"
+                  >Connecting…</span
+                >
+              </div>
+            </div>
+            <div class="transport">
+              <button type="button" id="retry-btn" class="btn btn-secondary">
+                Retry
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Compare live: selected cameras (substream) -->
+        <section id="compare-view" class="view" aria-label="Compare live">
+          <div class="compare-toolbar">
+            <h2 id="compare-title">Compare live</h2>
+            <button type="button" id="compare-fs-all-btn" class="btn btn-secondary">
+              Full screen all
             </button>
           </div>
-        </div>
-
-        <!-- Multi camera view -->
-        <div id="multi-view" class="view-container" style="display: none">
-          <div id="cameras-grid" class="cameras-grid">
-            <!-- Camera players will be dynamically added here -->
+          <div class="compare-fs-root" id="compare-fs-root">
+            <div class="fs-wall-bar" id="compare-fs-bar">
+              <span class="live-badge">LIVE</span>
+              <button type="button" id="compare-fs-exit-btn" class="btn">
+                Exit full screen
+              </button>
+            </div>
+            <div id="compare-grid" class="compare-grid" data-cols="2"></div>
           </div>
-        </div>
+        </section>
 
-        <div
-          id="error-message"
-          class="error-message"
-          style="display: none"
-        ></div>
+        <div id="error-message" class="error-message hidden" role="alert"></div>
       </main>
     </div>
 
+    <!-- Ephemeral fullscreen selected wall -->
+    <div
+      id="fs-wall"
+      class="fs-wall hidden"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-label="Fullscreen camera wall"
+    >
+      <div class="fs-wall-bar" id="fs-wall-bar">
+        <span class="live-badge">LIVE</span>
+        <button type="button" id="fs-wall-exit-btn" class="btn">
+          Exit full screen
+        </button>
+        <button type="button" id="fs-wall-enter-btn" class="btn">
+          Full screen
+        </button>
+      </div>
+      <div id="fs-wall-grid" class="compare-grid" data-cols="2"></div>
+    </div>
+
+    <!-- Video.js 8 bundles VHS (http-streaming); no separate script needed -->
     <script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@videojs/http-streaming@3.0.2/dist/videojs-http-streaming.min.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

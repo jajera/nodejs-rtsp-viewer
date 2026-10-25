@@ -1,37 +1,29 @@
 {
-  "name": "Camera Web Viewer",
-  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-20-bullseye",
-
-  "features": {
-    "ghcr.io/devcontainers/features/common-utils:2": {
-      "installZsh": true,
-      "installOhMyZsh": true,
-      "upgradePackages": true,
-      "username": "node",
-      "uid": "1000",
-      "gid": "1000"
-    }
+  "name": "nodejs-rtsp-viewer",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
   },
 
-  "postCreateCommand": "bash -c 'sudo apt-get update && sudo apt-get install -y ffmpeg && ffmpeg -version && npm install'",
+  // FFmpeg is baked into the image (see Dockerfile). Avoid apt-get on every create.
+  "postCreateCommand": "npm install && (test -f .env || cp .env.example .env) && mkdir -p hls",
 
   "customizations": {
     "vscode": {
       "extensions": [
         "dbaeumer.vscode-eslint",
         "esbenp.prettier-vscode",
-        "ms-vscode.vscode-typescript-next",
-        "bradlc.vscode-tailwindcss"
+        "ms-azuretools.vscode-docker"
       ],
       "settings": {
         "editor.formatOnSave": true,
         "editor.defaultFormatter": "esbenp.prettier-vscode",
-        "editor.codeActionsOnSave": {
-          "source.fixAll.eslint": "explicit"
-        },
         "files.eol": "\n",
         "files.trimTrailingWhitespace": true,
-        "files.insertFinalNewline": true
+        "files.insertFinalNewline": true,
+        "files.exclude": {
+          "**/hls/**/*.ts": true
+        }
       }
     }
   },
@@ -39,13 +31,21 @@
   "forwardPorts": [3000],
   "portsAttributes": {
     "3000": {
-      "label": "Web Server",
+      "label": "Camera Viewer",
       "onAutoForward": "notify"
     }
   },
 
   "remoteUser": "node",
-  "remoteEnv": {
-    "NODE_ENV": "development"
-  }
+  "containerEnv": {
+    "NODE_ENV": "development",
+    "PORT": "3000",
+    "HLS_OUTPUT_DIR": "hls"
+  },
+
+  // Linux + LAN cameras: uncomment so RTSP reaches the camera subnet (same as compose).
+  // Breaks some Mac/Windows Docker Desktop networking — leave commented unless needed.
+  // "runArgs": ["--network=host"],
+
+  "waitFor": "postCreateCommand"
 }

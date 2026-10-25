@@ -1,0 +1,25 @@
+# Always-on camera viewer. On Linux, host networking reaches camera LAN easily.
+# Usage:
+#   cp .env.example .env   # then edit camera RTSP URLs
+#   docker compose up -d --build
+#   open http://localhost:3000
+
+services:
+  viewer:
+    build: .
+    container_name: nodejs-rtsp-viewer
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HLS_OUTPUT_DIR: /app/hls
+      PORT: "3000"
+    volumes:
+      - ./hls:/app/hls
+      # Re-read .env from host (fluent multi-line CAMERAS parsing uses the file)
+      - ./.env:/app/.env:ro
+    # Host network: recommended on Linux so RTSP to LAN cameras works without extra routes.
+    network_mode: host
+    # If you cannot use host network, comment network_mode above and use:
+    # ports:
+    #   - "3000:3000"
